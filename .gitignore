@@ -2,3 +2,5 @@ venv/
 memory.json
 __pycache__/
 *.pyc
+.coder/
+test_project/
