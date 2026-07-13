@@ -1,4 +1,5 @@
 #The Managger
+
 ## Coding Helper
 
 A lightweight terminal coding assistant for local projects using **Ollama**.
