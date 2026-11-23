@@ -1,12 +1,11 @@
 import os
-import re
 import sys
 from dataclasses import dataclass
 from rich.console import Console
 from rich.prompt import Prompt
 
-from project import (list_files, read_file, write_file, resolve_path_inside_project,
-                     format_project_file_list, read_project_md, search)
+from project import list_files, format_project_file_list, read_project_md, search
+from file_edits import write_accepted_edits
 from diff_tool import show_diff
 from session import (list_sessions, load_session, save_session, session_filename,
                      delete_session, new_session_name, session_preview)
@@ -36,51 +35,47 @@ another tool or write your final answer.
 
 ## How to modify code
 
-When you want to CREATE or MODIFY files, respond with blocks (not tool calls):
+To CHANGE an existing file, use one EDIT block per change (not tool calls):
 
-<<<FILE: path/to/file.py>>>
-<full new content>
+<<<EDIT: path/to/file.py>>>
+<<<SEARCH>>>
+<exact lines currently in the file>
+<<<REPLACE>>>
+<the lines that replace them>
+<<<END>>>
+
+To CREATE a new file, use a FILE block with its full content:
+
+<<<FILE: path/to/new_file.py>>>
+<full content>
 <<<END>>>
 
 Rules:
 - Explore with tools BEFORE proposing changes. Don't guess file contents.
-- Always output the ENTIRE new file, not just changed lines.
+- SEARCH must be copied exactly from the file (including indentation) and match exactly one place.
+  Include a few surrounding lines if needed to make it unique. Keep each block small.
+- Several EDIT blocks for the same file are applied in order.
+- To delete lines, leave REPLACE empty.
 - Be concise. Only read files you actually need.
 - For simple questions, answer directly without tools.
 """
 
 
-FILE_BLOCK_PATTERN = re.compile(
-    r"<<<FILE:\s*(.+?)>>>\n(.*?)<<<END>>>", re.DOTALL
-)
-
-
-def parse_file_blocks(text):
-    return [(path.strip(), content) for path, content in FILE_BLOCK_PATTERN.findall(text)]
-
-
-def handle_file_changes(model_reply, project_root):
-    blocks = parse_file_blocks(model_reply)
-    if not blocks:
+def handle_file_changes(edit_plan):
+    if not edit_plan.planned_edits:
         return
 
-    # Resolve every path before showing anything, so one bad path rejects the whole proposal.
-    resolved_blocks = [(path, resolve_path_inside_project(project_root, path), new_content)
-                       for path, new_content in blocks]
-
     console.print("\n[bold cyan]Proposed changes:[/bold cyan]")
-    for path, full_path, new_content in resolved_blocks:
-        old_content = read_file(full_path) if os.path.exists(full_path) else ""
-        show_diff(old_content, new_content, path)
+    for planned_edit in edit_plan.planned_edits:
+        show_diff(planned_edit.content_before or "", planned_edit.content_after, planned_edit.block.path)
 
     answer = Prompt.ask("\n[bold yellow]Apply changes?[/bold yellow]",
                         choices=["y", "n"], default="n")
-    if answer == "y":
-        for path, full_path, new_content in resolved_blocks:
-            write_file(full_path, new_content)
-            console.print(f"[green]Wrote {safe_for_rich_markup(path)}[/green]")
-    else:
+    if answer != "y":
         console.print("[red]Changes discarded.[/red]")
+        return
+    for written_path in write_accepted_edits(edit_plan, edit_plan.planned_edits):
+        console.print(f"[green]Wrote {safe_for_rich_markup(written_path)}[/green]")
 
 
 def build_system_messages(project_root):
@@ -274,14 +269,14 @@ def run_chat_turn(state, user_input):
     state.history.append({"role": "user", "content": user_input})
 
     try:
-        final_reply = agent_loop(state.history, state.project_root)
+        edit_plan = agent_loop(state.history, state.project_root)
     except Exception as turn_error:
         console.print(f"[red]Error: {type(turn_error).__name__}: {safe_for_rich_markup(str(turn_error))}[/red]")
         del state.history[history_length_before_turn:]
         return
 
     try:
-        handle_file_changes(final_reply, state.project_root)
+        handle_file_changes(edit_plan)
     except (OSError, ValueError) as file_change_error:
         console.print(f"[red]Changes not applied: {safe_for_rich_markup(str(file_change_error))}[/red]")
 

@@ -3,6 +3,7 @@ import re
 
 from rich.console import Console
 
+from file_edits import EditPlanError, parse_edit_blocks, plan_edits
 from ollama_client import chat
 from terminal_text import safe_for_rich_markup
 from tools import run_tool
@@ -26,9 +27,10 @@ def parse_tool_call(tool_call_json):
 
 
 def agent_loop(history, project_root):
-    """Let the model call tools until it gives a reply without a tool call; return that reply.
+    """Let the model call tools until it gives a final reply whose edit blocks all apply; return their EditPlan.
 
-    Appends every assistant reply and tool result to history.
+    Edit blocks that cannot be applied are sent back to the model to fix. Appends every assistant reply,
+    tool result and edit error to history.
     """
     for _ in range(MAX_MODEL_CALLS_PER_TURN):
         reply = chat(history)
@@ -36,7 +38,16 @@ def agent_loop(history, project_root):
 
         tool_call_match = TOOL_CALL_PATTERN.search(reply)
         if not tool_call_match:
-            return reply
+            try:
+                return plan_edits(parse_edit_blocks(reply), project_root)
+            except EditPlanError as plan_error:
+                console.print(f"[red]Proposed edits rejected, asking the model to fix them:\n"
+                              f"{safe_for_rich_markup(str(plan_error))}[/red]")
+                history.append({"role": "user", "content": (
+                    f"Your edits could not be applied:\n{plan_error}\n"
+                    "Send ALL your edit blocks again, corrected. SEARCH text must be copied exactly "
+                    "from the current file and match exactly one place.")})
+                continue
 
         # Tool errors go back to the model so it can correct the call; they are also shown to the user.
         try:
