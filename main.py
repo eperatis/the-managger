@@ -35,19 +35,26 @@ another tool or write your final answer.
 
 ## How to modify code
 
-To CHANGE an existing file, use one EDIT block per change (not tool calls):
+To CHANGE an existing file, use one EDIT block per change (not a tool call).
+Example that renames a function in utils.py:
 
-<<<EDIT: path/to/file.py>>>
+<<<EDIT: utils.py>>>
 <<<SEARCH>>>
-<exact lines currently in the file>
+def add(a, b):
+    return a + b
 <<<REPLACE>>>
-<the lines that replace them>
+def add_numbers(a, b):
+    return a + b
 <<<END>>>
 
-To CREATE a new file, use a FILE block with its full content:
+Every EDIT block has exactly these four marker lines, in this order:
+<<<EDIT: path>>>, <<<SEARCH>>>, <<<REPLACE>>>, <<<END>>>.
 
-<<<FILE: path/to/new_file.py>>>
-<full content>
+To CREATE a new file, use a FILE block with its full content. Example:
+
+<<<FILE: greetings.py>>>
+def greet(name):
+    return "Hello, " + name
 <<<END>>>
 
 Rules:

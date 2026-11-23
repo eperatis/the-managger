@@ -45,8 +45,8 @@ def agent_loop(history, project_root):
                               f"{safe_for_rich_markup(str(plan_error))}[/red]")
                 history.append({"role": "user", "content": (
                     f"Your edits could not be applied:\n{plan_error}\n"
-                    "Send ALL your edit blocks again, corrected. SEARCH text must be copied exactly "
-                    "from the current file and match exactly one place.")})
+                    "Reply with ONLY all your edit blocks again, corrected, and no explanation. "
+                    "SEARCH text must be copied exactly from the current file and match exactly one place.")})
                 continue
 
         # Tool errors go back to the model so it can correct the call; they are also shown to the user.

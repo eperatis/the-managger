@@ -12,13 +12,14 @@ from dataclasses import dataclass
 
 from project import read_file, resolve_path_inside_project, write_file
 
+BLOCK_START_PATTERN = re.compile(r"<<<(FILE|EDIT):")
+BLOCK_END_MARKER = "<<<END>>>"
+BLOCK_HEADER_LINE_PATTERN = re.compile(r"<<<(?:FILE|EDIT):[^<>\n]+>>>")
+NEW_FILE_BLOCK_PATTERN = re.compile(
+    r"<<<FILE:[ \t]*(?P<path>[^\n]+?)>>>\n(?P<content>.*)<<<END>>>", re.DOTALL)
 EDIT_BLOCK_PATTERN = re.compile(
-    r"<<<FILE:[ \t]*(?P<new_file_path>[^\n]+?)>>>\n(?P<new_file_content>.*?)<<<END>>>"
-    r"|<<<EDIT:[ \t]*(?P<edit_path>[^\n]+?)>>>\n<<<SEARCH>>>\n(?P<search_text>.*?)"
-    r"<<<REPLACE>>>\n(?P<replacement_text>.*?)<<<END>>>",
-    re.DOTALL,
-)
-BLOCK_START_PATTERN = re.compile(r"<<<(?:FILE|EDIT):")
+    r"<<<EDIT:[ \t]*(?P<path>[^\n]+?)>>>\n<<<SEARCH>>>\n(?P<search_text>.*?)"
+    r"<<<REPLACE>>>\n(?P<replacement_text>.*)<<<END>>>", re.DOTALL)
 
 
 class EditPlanError(ValueError):
@@ -47,17 +48,44 @@ class EditPlan:
     original_content_by_full_path: dict[str, str | None]
 
 
+def describe_malformed_block(block_text):
+    """Say what is wrong with a block, specifically enough for a small model to fix it."""
+    header_line = block_text.split("\n", 1)[0]
+    if BLOCK_START_PATTERN.search(block_text, 1):
+        return f"'{header_line}' has no {BLOCK_END_MARKER} line before the next block starts"
+    if not BLOCK_HEADER_LINE_PATTERN.fullmatch(header_line):
+        return f"header '{header_line}' must be alone on its own line, like <<<EDIT: path/to/file.py>>>"
+    if block_text.startswith("<<<EDIT:"):
+        if "<<<SEARCH>>>\n" not in block_text:
+            return f"'{header_line}' is missing the <<<SEARCH>>> line directly after it"
+        if "<<<REPLACE>>>\n" not in block_text:
+            return f"'{header_line}' is missing the <<<REPLACE>>> line between the old lines and the new lines"
+    return f"'{header_line}' does not follow the block format"
+
+
 def parse_edit_blocks(model_reply):
+    """Parse every FILE/EDIT block in the reply. Raises EditPlanError describing each malformed block."""
     blocks = []
-    for block_number, match in enumerate(EDIT_BLOCK_PATTERN.finditer(model_reply), start=1):
-        if match["new_file_path"] is not None:
-            blocks.append(EditBlock(block_number, match["new_file_path"].strip(), None, match["new_file_content"]))
+    problems = []
+    for block_number, start_match in enumerate(BLOCK_START_PATTERN.finditer(model_reply), start=1):
+        end_index = model_reply.find(BLOCK_END_MARKER, start_match.start())
+        if end_index == -1:
+            problems.append(f"Block {block_number}: no {BLOCK_END_MARKER} line closes it")
+            continue
+        block_text = model_reply[start_match.start():end_index + len(BLOCK_END_MARKER)]
+        is_new_file_block = start_match[1] == "FILE"
+        block_pattern = NEW_FILE_BLOCK_PATTERN if is_new_file_block else EDIT_BLOCK_PATTERN
+        contains_next_block_start = BLOCK_START_PATTERN.search(block_text, 1) is not None
+        block_match = None if contains_next_block_start else block_pattern.fullmatch(block_text)
+        if not block_match:
+            problems.append(f"Block {block_number}: {describe_malformed_block(block_text)}")
+        elif is_new_file_block:
+            blocks.append(EditBlock(block_number, block_match["path"].strip(), None, block_match["content"]))
         else:
-            blocks.append(EditBlock(block_number, match["edit_path"].strip(),
-                                    match["search_text"], match["replacement_text"]))
-    started_block_count = len(BLOCK_START_PATTERN.findall(model_reply))
-    if started_block_count != len(blocks):
-        raise EditPlanError(f"{started_block_count - len(blocks)} block(s) are malformed and could not be parsed")
+            blocks.append(EditBlock(block_number, block_match["path"].strip(),
+                                    block_match["search_text"], block_match["replacement_text"]))
+    if problems:
+        raise EditPlanError("\n".join(problems))
     return blocks
 
 
