@@ -10,15 +10,16 @@ The tool lets you chat with an LLM about your codebase, inspect project files, a
 
 * Chat with a local Ollama model
 * Automatically provides the model with a project file tree
+* Uses Ollama's native tool calling: the model reads, searches and edits files through tools
 * Search and inspect project files
 * Supports optional `PROJECT.md` project instructions
-* Shows colored diffs before applying changes
+* Edits are staged as small search/replace changes; you review each diff and accept all, none, or pick individual edits
 * Save and restore chat sessions
 
 ## Requirements
 
 * Python 3.10+
-* Ollama running locally
+* Ollama running locally, with a model that supports tool calling (for example `qwen3.5:4b`)
 * Required Python packages (such as `requests` and `rich`)
 
 Configure the model and Ollama server in `config.py` or with environment variables:
@@ -26,7 +27,10 @@ Configure the model and Ollama server in `config.py` or with environment variabl
 ```bash
 export OLLAMA_HOST=http://localhost:11434
 export OLLAMA_MODEL=qwen3.5:9b
+export OLLAMA_CONTEXT_LENGTH_TOKENS=16384
 ```
+
+On a 4 GB GPU, `qwen3.5:4b` handles edits; `qwen3.5:2b` uses the tools but often proposes wrong changes.
 
 ## Usage
 
@@ -63,10 +67,13 @@ The assistant will load the project structure and start an interactive terminal 
 
 ## Editing Files
 
-When the assistant proposes file changes:
+The model never writes files directly. During a turn it changes files with the
+`replace_in_file` and `create_file` tools, which stage each change after checking it
+(the path must be inside the project, and the text being replaced must occur exactly once).
 
-1. A colored diff is displayed.
-2. You choose whether to apply the changes.
-3. Files are only written after confirmation.
+When the model finishes its reply:
 
-This provides a simple review step before modifying your project.
+1. Each staged edit is shown as a numbered, colored diff.
+2. You choose `a` (apply all), `n` (none), or `c` (decide each edit with y/n).
+3. Only accepted edits are written. If an accepted edit was made on top of one you declined, nothing is written.
+4. The model is told which edits were applied and which were declined.

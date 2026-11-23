@@ -5,93 +5,82 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from project import list_files, format_project_file_list, read_project_md, search
-from file_edits import write_accepted_edits
+from file_edits import EditConflictError
 from diff_tool import show_diff
 from session import (list_sessions, load_session, save_session, session_filename,
                      delete_session, new_session_name, session_preview)
 from terminal_text import safe_for_rich_markup
-from tools import tools_description
 from agent import agent_loop
 
 console = Console()
 
-SYSTEM_PROMPT_TEMPLATE = """You are a helpful coding assistant running in a terminal.
-You have access to the user's project files via TOOLS.
+SYSTEM_PROMPT = """You are a coding assistant working on the user's project through tools.
 
-## Available tools
-
-{tools}
-
-## How to call a tool
-
-Output ONE tool call, then STOP. Format:
-
-<<<TOOL>>>
-{{"name": "tool_name", "args": {{...}}}}
-<<<END>>>
-
-You will receive the tool result in the next message, then you can call
-another tool or write your final answer.
-
-## How to modify code
-
-To CHANGE an existing file, use one EDIT block per change (not a tool call).
-Example that renames a function in utils.py:
-
-<<<EDIT: utils.py>>>
-<<<SEARCH>>>
-def add(a, b):
-    return a + b
-<<<REPLACE>>>
-def add_numbers(a, b):
-    return a + b
-<<<END>>>
-
-Every EDIT block has exactly these four marker lines, in this order:
-<<<EDIT: path>>>, <<<SEARCH>>>, <<<REPLACE>>>, <<<END>>>.
-
-To CREATE a new file, use a FILE block with its full content. Example:
-
-<<<FILE: greetings.py>>>
-def greet(name):
-    return "Hello, " + name
-<<<END>>>
-
-Rules:
-- Explore with tools BEFORE proposing changes. Don't guess file contents.
-- SEARCH must be copied exactly from the file (including indentation) and match exactly one place.
-  Include a few surrounding lines if needed to make it unique. Keep each block small.
-- Several EDIT blocks for the same file are applied in order.
-- To delete lines, leave REPLACE empty.
-- Be concise. Only read files you actually need.
-- For simple questions, answer directly without tools.
+- Read files with read_file before changing them. Don't guess file contents.
+- Change existing files with replace_in_file, one call per change. Copy old_text exactly from
+  read_file output, including indentation, and include enough lines to make it unique.
+- Create new files with create_file.
+- Your edits are staged, not written. After your final reply the user reviews them and accepts
+  or declines each one, so finish with a short summary of what you changed and why.
+- If a tool returns an error, fix the call and try again.
+- For questions that need no files, answer directly. Be concise.
 """
 
 
-def handle_file_changes(edit_plan):
-    if not edit_plan.planned_edits:
+def choose_accepted_edits(staged_edits):
+    if len(staged_edits) == 1:
+        answer = Prompt.ask("[bold yellow]Apply this edit?[/bold yellow]", choices=["y", "n"], default="n")
+        return staged_edits if answer == "y" else []
+    answer = Prompt.ask("[bold yellow]Apply edits?[/bold yellow] a = all, n = none, c = choose each",
+                        choices=["a", "n", "c"], default="n")
+    if answer == "a":
+        return staged_edits
+    if answer == "n":
+        return []
+    return [staged_edit for staged_edit in staged_edits
+            if Prompt.ask(f"  Apply edit {staged_edit.edit_number} "
+                          f"({safe_for_rich_markup(staged_edit.display_path)})?",
+                          choices=["y", "n"], default="n") == "y"]
+
+
+def review_staged_edits(staged_edits, history):
+    """Show each staged edit, write the ones the user accepts, and tell the model the outcome."""
+    if not staged_edits.edits:
         return
 
-    console.print("\n[bold cyan]Proposed changes:[/bold cyan]")
-    for planned_edit in edit_plan.planned_edits:
-        show_diff(planned_edit.content_before or "", planned_edit.content_after, planned_edit.block.path)
+    console.print("\n[bold cyan]Proposed edits:[/bold cyan]")
+    for staged_edit in staged_edits.edits:
+        console.print(f"\n[bold]Edit {staged_edit.edit_number}[/bold] "
+                      f"{safe_for_rich_markup(staged_edit.display_path)}")
+        show_diff(staged_edit.content_before or "", staged_edit.content_after, staged_edit.display_path)
 
-    answer = Prompt.ask("\n[bold yellow]Apply changes?[/bold yellow]",
-                        choices=["y", "n"], default="n")
-    if answer != "y":
-        console.print("[red]Changes discarded.[/red]")
-        return
-    for written_path in write_accepted_edits(edit_plan, edit_plan.planned_edits):
+    accepted_edits = choose_accepted_edits(staged_edits.edits)
+    try:
+        written_paths = staged_edits.write_accepted(accepted_edits)
+    except EditConflictError as conflict_error:
+        console.print(f"[red]{safe_for_rich_markup(str(conflict_error))}[/red]")
+        accepted_edits = []
+        written_paths = []
+    for written_path in written_paths:
         console.print(f"[green]Wrote {safe_for_rich_markup(written_path)}[/green]")
+
+    accepted_numbers = [str(staged_edit.edit_number) for staged_edit in accepted_edits]
+    declined_numbers = [str(staged_edit.edit_number) for staged_edit in staged_edits.edits
+                        if staged_edit not in accepted_edits]
+    if declined_numbers:
+        console.print(f"[yellow]Declined edits: {', '.join(declined_numbers)}[/yellow]")
+    # The model must know which edits reached the files, or it will assume all of them did.
+    history.append({"role": "user", "content": (
+        f"[Edit review] Applied edits: {', '.join(accepted_numbers) or 'none'}. "
+        f"Declined edits: {', '.join(declined_numbers) or 'none'}. Declined edits are not in the files.")})
 
 
 def build_system_messages(project_root):
-    """System prompt + project overview + PROJECT.md."""
-    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_description())
-    system_messages = [{"role": "system", "content": system_prompt}]
+    """System prompt + project file list + PROJECT.md."""
+    system_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     file_list = format_project_file_list(project_root)
-    overview = f"## Project overview\nRoot: {project_root}\n\nFiles:\n{file_list}"
+    overview = f"## Project files (paths relative to the project root)\n\n{file_list}"
     system_messages.append({"role": "system", "content": overview})
 
     project_md_content = read_project_md(project_root)
@@ -276,16 +265,16 @@ def run_chat_turn(state, user_input):
     state.history.append({"role": "user", "content": user_input})
 
     try:
-        edit_plan = agent_loop(state.history, state.project_root)
+        staged_edits = agent_loop(state.history, state.project_root)
     except Exception as turn_error:
         console.print(f"[red]Error: {type(turn_error).__name__}: {safe_for_rich_markup(str(turn_error))}[/red]")
         del state.history[history_length_before_turn:]
         return
 
     try:
-        handle_file_changes(edit_plan)
-    except (OSError, ValueError) as file_change_error:
-        console.print(f"[red]Changes not applied: {safe_for_rich_markup(str(file_change_error))}[/red]")
+        review_staged_edits(staged_edits, state.history)
+    except OSError as write_error:
+        console.print(f"[red]Writing edits failed: {safe_for_rich_markup(str(write_error))}[/red]")
 
 
 def main():
