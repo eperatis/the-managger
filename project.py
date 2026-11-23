@@ -19,12 +19,11 @@ def list_files(root="."):
 
 
 def read_file(path):
-    """Read the content of a file."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"[Error reading {path}: {e}]"
+        with open(path, "r", encoding="utf-8") as file_handle:
+            return file_handle.read()
+    except UnicodeDecodeError as decode_error:
+        raise ValueError(f"Cannot read {path}: not valid UTF-8 text") from decode_error
 
 
 def write_file(path, content):
@@ -49,10 +48,12 @@ def project_summary(root=".", max_chars_per_file=3000):
 
 
 def search(query, root="."):
-    """Search for a string in all project files."""
-    results = []
-    for f in list_files(root):
-        content = read_file(os.path.join(root, f))
-        if query.lower() in content.lower():
-            results.append(f)
-    return results
+    """Case-insensitive search. Returns (relative_path, line_number, line_text) tuples."""
+    lowercase_query = query.lower()
+    matches = []
+    for relative_path in list_files(root):
+        content = read_file(os.path.join(root, relative_path))
+        for line_number, line_text in enumerate(content.splitlines(), start=1):
+            if lowercase_query in line_text.lower():
+                matches.append((relative_path, line_number, line_text.strip()))
+    return matches

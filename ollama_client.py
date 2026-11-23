@@ -22,10 +22,12 @@ def chat(messages, stream=True):
             if not line:
                 continue
             data = json.loads(line.decode("utf-8"))
-            chunk = data.get("message", {}).get("content", "")
+            if "error" in data:
+                raise RuntimeError(f"Ollama error: {data['error']}")
+            chunk = data["message"]["content"]
             print(chunk, end="", flush=True)
             full_reply += chunk
-            if data.get("done"):
+            if data["done"]:
                 break
         print()
     else:

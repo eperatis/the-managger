@@ -214,7 +214,10 @@ def main():
             else:
                 for s in sessions:
                     console.print(f" [cyan]{s}[/cyan]")
-                    console.print(f"   {session_preview(s, project_root)}")
+                    try:
+                        console.print(f"   {session_preview(s, project_root)}")
+                    except ValueError as preview_error:
+                        console.print(f"   [red]Unreadable session: {preview_error}[/red]")
             continue
 
         if cmd.startswith("/save"):
@@ -223,12 +226,14 @@ def main():
                 name = parts[1]
                 if not name.endswith(".json"):
                     name += ".json"
-                current_session_name = name
-            elif not current_session_name:
+            elif current_session_name:
+                name = current_session_name
+            else:
                 user_msgs = [m for m in history if m["role"] == "user"]
                 topic = user_msgs[0]["content"] if user_msgs else ""
-                current_session_name = new_session_name(topic)
-            save_session(current_session_name, history, project_root)
+                name = new_session_name(topic)
+            save_session(name, history, project_root)
+            current_session_name = name
             console.print(f"[green]✓ Saved: {current_session_name}[/green]")
             continue
 
@@ -236,9 +241,10 @@ def main():
             name = cmd[len("/load "):].strip()
             if not name.endswith(".json"):
                 name += ".json"
-            loaded = load_session(name, project_root)
-            if not loaded:
-                console.print(f"[red]Session not found: {name}[/red]")
+            try:
+                loaded = load_session(name, project_root)
+            except (OSError, ValueError) as load_error:
+                console.print(f"[red]Could not load session: {load_error}[/red]")
                 continue
             # Offer to save current before switching
             prompt_save(current_session_name, history, project_root)
@@ -264,37 +270,43 @@ def main():
             name = cmd[len("/delete "):].strip()
             if not name.endswith(".json"):
                 name += ".json"
-            if delete_session(name, project_root):
-                console.print(f"[green]✓ Deleted {name}[/green]")
-                if name == current_session_name:
-                    current_session_name = None
-            else:
-                console.print(f"[red]Not found: {name}[/red]")
+            try:
+                delete_session(name, project_root)
+            except OSError as delete_error:
+                console.print(f"[red]Could not delete session: {delete_error}[/red]")
+                continue
+            console.print(f"[green]✓ Deleted {name}[/green]")
+            if name == current_session_name:
+                current_session_name = None
             continue
 
         if cmd.startswith("/rename "):
             new_name = cmd[len("/rename "):].strip()
             if not new_name.endswith(".json"):
                 new_name += ".json"
-            # If already saved under old name, delete old file
-            if current_session_name:
+            save_session(new_name, history, project_root)
+            previous_session_was_saved = current_session_name in list_sessions(project_root)
+            if previous_session_was_saved and current_session_name != new_name:
                 delete_session(current_session_name, project_root)
             current_session_name = new_name
-            save_session(current_session_name, history, project_root)
             console.print(f"[green]✓ Renamed to {new_name}[/green]")
             continue
 
         # --- Normal chat turn ---
+        history_length_before_turn = len(history)
         history.append({"role": "user", "content": user_input})
 
         try:
             final_reply = agent_loop(history, project_root)
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-            history.pop()
+        except Exception as turn_error:
+            console.print(f"[red]Error: {type(turn_error).__name__}: {turn_error}[/red]")
+            del history[history_length_before_turn:]
             continue
 
-        handle_file_changes(final_reply, project_root)
+        try:
+            handle_file_changes(final_reply, project_root)
+        except (OSError, ValueError) as file_change_error:
+            console.print(f"[red]Changes not applied: {file_change_error}[/red]")
 
 
 if __name__ == "__main__":

@@ -39,16 +39,15 @@ def list_sessions(project_root="."):
 
 
 def load_session(name, project_root="."):
-    """Load a session by filename. Returns the message list or [] if missing."""
+    """Load a session's message list. Raises if the file is missing or malformed."""
     path = os.path.join(sessions_dir(project_root), name)
     if not os.path.exists(path):
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("messages", [])
-    except Exception:
-        return []
+        raise FileNotFoundError(f"Session not found: {name}")
+    with open(path, "r", encoding="utf-8") as session_file:
+        session_data = json.load(session_file)
+    if not isinstance(session_data.get("messages"), list):
+        raise ValueError(f"Session file {name} has no 'messages' list")
+    return session_data["messages"]
 
 
 def save_session(name, messages, project_root="."):
@@ -65,12 +64,10 @@ def save_session(name, messages, project_root="."):
 
 
 def delete_session(name, project_root="."):
-    """Delete a session file. Returns True if deleted."""
     path = os.path.join(sessions_dir(project_root), name)
-    if os.path.exists(path):
-        os.remove(path)
-        return True
-    return False
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Session not found: {name}")
+    os.remove(path)
 
 
 def session_preview(name, project_root="."):
