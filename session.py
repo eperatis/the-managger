@@ -8,11 +8,32 @@ import re
 from datetime import datetime
 
 
+SESSION_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+
+
 def sessions_dir(project_root="."):
     """Where sessions are stored for a project."""
-    folder = os.path.join(os.path.abspath(project_root), ".coder", "sessions")
+    coder_folder = os.path.join(os.path.abspath(project_root), ".coder")
+    folder = os.path.join(coder_folder, "sessions")
     os.makedirs(folder, exist_ok=True)
+    # Sessions contain project file contents; keep them out of the project's git repository.
+    gitignore_path = os.path.join(coder_folder, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, "w", encoding="utf-8") as gitignore_file:
+            gitignore_file.write("*\n")
     return folder
+
+
+def session_filename(name):
+    """Turn 'my-session' or 'my-session.json' into a validated filename that cannot leave the sessions folder."""
+    stem = name.removesuffix(".json")
+    if not SESSION_NAME_PATTERN.fullmatch(stem):
+        raise ValueError(f"Invalid session name {name!r}: use only letters, digits, '-' and '_'")
+    return stem + ".json"
+
+
+def session_path(name, project_root):
+    return os.path.join(sessions_dir(project_root), session_filename(name))
 
 
 def _slugify(text, max_len=40):
@@ -40,7 +61,7 @@ def list_sessions(project_root="."):
 
 def load_session(name, project_root="."):
     """Load a session's message list. Raises if the file is missing or malformed."""
-    path = os.path.join(sessions_dir(project_root), name)
+    path = session_path(name, project_root)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Session not found: {name}")
     with open(path, "r", encoding="utf-8") as session_file:
@@ -52,7 +73,7 @@ def load_session(name, project_root="."):
 
 def save_session(name, messages, project_root="."):
     """Save messages under the given session name."""
-    path = os.path.join(sessions_dir(project_root), name)
+    path = session_path(name, project_root)
     data = {
         "name": name,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -64,7 +85,7 @@ def save_session(name, messages, project_root="."):
 
 
 def delete_session(name, project_root="."):
-    path = os.path.join(sessions_dir(project_root), name)
+    path = session_path(name, project_root)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Session not found: {name}")
     os.remove(path)

@@ -18,6 +18,15 @@ def list_files(root="."):
     return found
 
 
+def resolve_path_inside_project(project_root, path):
+    """Return the absolute real path, or raise if it (after symlinks and '..') is outside project_root."""
+    real_project_root = os.path.realpath(project_root)
+    resolved_path = os.path.realpath(os.path.join(real_project_root, path))
+    if os.path.commonpath([real_project_root, resolved_path]) != real_project_root:
+        raise ValueError(f"Refusing path outside the project: {path}")
+    return resolved_path
+
+
 def read_file(path):
     try:
         with open(path, "r", encoding="utf-8") as file_handle:

@@ -1,6 +1,7 @@
 import requests
 import json
-from config import OLLAMA_HOST, MODEL
+from config import OLLAMA_HOST, MODEL, OLLAMA_CONNECT_TIMEOUT_SECONDS, OLLAMA_READ_TIMEOUT_SECONDS
+from terminal_text import strip_terminal_control_characters
 
 OLLAMA_URL = OLLAMA_HOST + "/api/chat"
 
@@ -13,7 +14,12 @@ def chat(messages, stream=True):
         "stream": stream,
     }
 
-    response = requests.post(OLLAMA_URL, json=payload, stream=stream)
+    response = requests.post(
+        OLLAMA_URL,
+        json=payload,
+        stream=stream,
+        timeout=(OLLAMA_CONNECT_TIMEOUT_SECONDS, OLLAMA_READ_TIMEOUT_SECONDS),
+    )
     response.raise_for_status()
 
     full_reply = ""
@@ -25,7 +31,7 @@ def chat(messages, stream=True):
             if "error" in data:
                 raise RuntimeError(f"Ollama error: {data['error']}")
             chunk = data["message"]["content"]
-            print(chunk, end="", flush=True)
+            print(strip_terminal_control_characters(chunk), end="", flush=True)
             full_reply += chunk
             if data["done"]:
                 break
@@ -33,6 +39,6 @@ def chat(messages, stream=True):
     else:
         data = response.json()
         full_reply = data["message"]["content"]
-        print(full_reply)
+        print(strip_terminal_control_characters(full_reply))
 
     return full_reply

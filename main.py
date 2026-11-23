@@ -5,11 +5,12 @@ from dataclasses import dataclass
 from rich.console import Console
 from rich.prompt import Prompt
 
-from project import (list_files, read_file, write_file,
+from project import (list_files, read_file, write_file, resolve_path_inside_project,
                      project_tree, read_project_md, search)
 from diff_tool import show_diff
-from session import (list_sessions, load_session, save_session,
+from session import (list_sessions, load_session, save_session, session_filename,
                      delete_session, new_session_name, session_preview)
+from terminal_text import safe_for_rich_markup
 from tools import tools_description
 from agent import agent_loop
 
@@ -63,19 +64,21 @@ def handle_file_changes(text, project_root):
     if not blocks:
         return
 
+    # Resolve every path before showing anything, so one bad path rejects the whole proposal.
+    resolved_blocks = [(path, resolve_path_inside_project(project_root, path), new_content)
+                       for path, new_content in blocks]
+
     console.print("\n[bold cyan]Proposed changes:[/bold cyan]")
-    for path, new_content in blocks:
-        full_path = os.path.join(project_root, path)
+    for path, full_path, new_content in resolved_blocks:
         old_content = read_file(full_path) if os.path.exists(full_path) else ""
         show_diff(old_content, new_content, path)
 
     answer = Prompt.ask("\n[bold yellow]Apply changes?[/bold yellow]",
                         choices=["y", "n"], default="n")
     if answer == "y":
-        for path, new_content in blocks:
-            full_path = os.path.join(project_root, path)
+        for path, full_path, new_content in resolved_blocks:
             write_file(full_path, new_content)
-            console.print(f"[green]✓ Wrote {path}[/green]")
+            console.print(f"[green]✓ Wrote {safe_for_rich_markup(path)}[/green]")
     else:
         console.print("[red]Changes discarded.[/red]")
 
@@ -149,12 +152,15 @@ def handle_help_command(state, argument):
 
 def handle_files_command(state, argument):
     for relative_path in list_files(state.project_root):
-        console.print(f" - {relative_path}")
+        console.print(f" - {safe_for_rich_markup(relative_path)}")
 
 
 def handle_project_command(state, argument):
     project_md_content = read_project_md(state.project_root)
-    console.print(project_md_content if project_md_content else "[dim]No PROJECT.md found[/dim]")
+    if project_md_content:
+        console.print(project_md_content, markup=False, highlight=False)
+    else:
+        console.print("[dim]No PROJECT.md found[/dim]")
 
 
 def handle_reload_command(state, argument):
@@ -168,7 +174,7 @@ def handle_search_command(state, query):
     if not matches:
         console.print("[dim]No matches.[/dim]")
     for relative_path, line_number, line_text in matches:
-        console.print(f" {relative_path}:{line_number}: {line_text}")
+        console.print(f" {safe_for_rich_markup(relative_path)}:{line_number}: {safe_for_rich_markup(line_text)}")
 
 
 def handle_sessions_command(state, argument):
@@ -176,16 +182,17 @@ def handle_sessions_command(state, argument):
     if not session_names:
         console.print("[dim]No saved sessions.[/dim]")
     for session_name in session_names:
-        console.print(f" [cyan]{session_name}[/cyan]")
+        console.print(f" [cyan]{safe_for_rich_markup(session_name)}[/cyan]")
         try:
-            console.print(f"   {session_preview(session_name, state.project_root)}")
+            preview = session_preview(session_name, state.project_root)
+            console.print(f"   {safe_for_rich_markup(preview)}")
         except ValueError as preview_error:
-            console.print(f"   [red]Unreadable session: {preview_error}[/red]")
+            console.print(f"   [red]Unreadable session: {safe_for_rich_markup(str(preview_error))}[/red]")
 
 
 def handle_save_command(state, requested_name):
     if requested_name:
-        name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+        name = session_filename(requested_name)
     elif state.current_session_name:
         name = state.current_session_name
     else:
@@ -198,7 +205,7 @@ def handle_save_command(state, requested_name):
 
 
 def handle_load_command(state, requested_name):
-    name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    name = session_filename(requested_name)
     loaded_history = load_session(name, state.project_root)
     prompt_save(state.current_session_name, state.history, state.project_root)
     state.history = loaded_history
@@ -212,13 +219,13 @@ def handle_new_command(state, topic):
     state.history = build_system_messages(state.project_root)
     state.current_session_name = None
     if topic:
-        console.print(f"[green]✓ New session on: {topic}[/green]")
+        console.print(f"[green]✓ New session on: {safe_for_rich_markup(topic)}[/green]")
     else:
         console.print("[green]✓ New session started[/green]")
 
 
 def handle_delete_command(state, requested_name):
-    name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    name = session_filename(requested_name)
     delete_session(name, state.project_root)
     console.print(f"[green]✓ Deleted {name}[/green]")
     if name == state.current_session_name:
@@ -226,7 +233,7 @@ def handle_delete_command(state, requested_name):
 
 
 def handle_rename_command(state, requested_name):
-    new_name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    new_name = session_filename(requested_name)
     save_session(new_name, state.history, state.project_root)
     previous_session_was_saved = state.current_session_name in list_sessions(state.project_root)
     if previous_session_was_saved and state.current_session_name != new_name:
@@ -255,7 +262,7 @@ def run_command(state, command_text):
     command_name, _, argument = command_text.partition(" ")
     argument = argument.strip()
     if command_name not in COMMAND_HANDLERS:
-        console.print(f"[red]Unknown command: {command_name}. Type /help for commands.[/red]")
+        console.print(f"[red]Unknown command: {safe_for_rich_markup(command_name)}. Type /help for commands.[/red]")
         return
     handler, required_argument_usage = COMMAND_HANDLERS[command_name]
     if required_argument_usage and not argument:
@@ -264,7 +271,7 @@ def run_command(state, command_text):
     try:
         handler(state, argument)
     except (OSError, ValueError) as command_error:
-        console.print(f"[red]{command_name} failed: {command_error}[/red]")
+        console.print(f"[red]{command_name} failed: {safe_for_rich_markup(str(command_error))}[/red]")
 
 
 def run_chat_turn(state, user_input):
@@ -274,23 +281,23 @@ def run_chat_turn(state, user_input):
     try:
         final_reply = agent_loop(state.history, state.project_root)
     except Exception as turn_error:
-        console.print(f"[red]Error: {type(turn_error).__name__}: {turn_error}[/red]")
+        console.print(f"[red]Error: {type(turn_error).__name__}: {safe_for_rich_markup(str(turn_error))}[/red]")
         del state.history[history_length_before_turn:]
         return
 
     try:
         handle_file_changes(final_reply, state.project_root)
     except (OSError, ValueError) as file_change_error:
-        console.print(f"[red]Changes not applied: {file_change_error}[/red]")
+        console.print(f"[red]Changes not applied: {safe_for_rich_markup(str(file_change_error))}[/red]")
 
 
 def main():
     project_root = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
     if not os.path.isdir(project_root):
-        console.print(f"[red]Directory not found: {project_root}[/red]")
+        console.print(f"[red]Directory not found: {safe_for_rich_markup(project_root)}[/red]")
         sys.exit(1)
 
-    console.print(f"[bold green]Coder Helper[/bold green] — {project_root}")
+    console.print(f"[bold green]Coder Helper[/bold green] — {safe_for_rich_markup(project_root)}")
     file_count = len(list_files(project_root))
     project_md_note = "PROJECT.md ✓" if read_project_md(project_root) else "no PROJECT.md"
     session_count = len(list_sessions(project_root))
