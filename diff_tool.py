@@ -7,7 +7,6 @@ console = Console()
 
 
 def make_diff(old, new, filename="file"):
-    """Generate a unified diff between old and new content."""
     diff = difflib.unified_diff(
         old.splitlines(keepends=True),
         new.splitlines(keepends=True),
@@ -18,7 +17,6 @@ def make_diff(old, new, filename="file"):
 
 
 def show_diff(old, new, filename="file"):
-    """Print a colorized diff."""
     diff = make_diff(old, new, filename)
     if not diff:
         console.print(f"[yellow]No changes in {safe_for_rich_markup(filename)}[/yellow]")

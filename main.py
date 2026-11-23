@@ -56,11 +56,11 @@ FILE_BLOCK_PATTERN = re.compile(
 
 
 def parse_file_blocks(text):
-    return [(p.strip(), c) for p, c in FILE_BLOCK_PATTERN.findall(text)]
+    return [(path.strip(), content) for path, content in FILE_BLOCK_PATTERN.findall(text)]
 
 
-def handle_file_changes(text, project_root):
-    blocks = parse_file_blocks(text)
+def handle_file_changes(model_reply, project_root):
+    blocks = parse_file_blocks(model_reply)
     if not blocks:
         return
 
@@ -78,25 +78,25 @@ def handle_file_changes(text, project_root):
     if answer == "y":
         for path, full_path, new_content in resolved_blocks:
             write_file(full_path, new_content)
-            console.print(f"[green]✓ Wrote {safe_for_rich_markup(path)}[/green]")
+            console.print(f"[green]Wrote {safe_for_rich_markup(path)}[/green]")
     else:
         console.print("[red]Changes discarded.[/red]")
 
 
 def build_system_messages(project_root):
     """System prompt + project overview + PROJECT.md."""
-    sys_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_description())
-    msgs = [{"role": "system", "content": sys_prompt}]
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_description())
+    system_messages = [{"role": "system", "content": system_prompt}]
 
     file_list = format_project_file_list(project_root)
     overview = f"## Project overview\nRoot: {project_root}\n\nFiles:\n{file_list}"
-    msgs.append({"role": "system", "content": overview})
+    system_messages.append({"role": "system", "content": overview})
 
-    pmd = read_project_md(project_root)
-    if pmd:
-        msgs.append({"role": "system",
-                     "content": f"## PROJECT.md (project rules)\n\n{pmd}"})
-    return msgs
+    project_md_content = read_project_md(project_root)
+    if project_md_content:
+        system_messages.append({"role": "system",
+                                "content": f"## PROJECT.md (project rules)\n\n{project_md_content}"})
+    return system_messages
 
 
 def print_help():
@@ -121,22 +121,17 @@ def print_help():
 """)
 
 
-def prompt_save(current_name, messages, project_root):
-    """Ask if the user wants to save the current session."""
-    # Only offer to save if there was real conversation
-    user_msgs = [m for m in messages if m["role"] == "user"]
-    if not user_msgs:
+def prompt_save(current_session_name, messages, project_root):
+    """Offer to save the session, but only if the user has said something."""
+    user_messages = [message for message in messages if message["role"] == "user"]
+    if not user_messages:
         return
-    ans = Prompt.ask("[yellow]Save this session?[/yellow]",
-                     choices=["y", "n"], default="y")
-    if ans == "y":
-        name = current_name
-        if not name:
-            topic = user_msgs[0]["content"]
-            name = new_session_name(topic)
+    answer = Prompt.ask("[yellow]Save this session?[/yellow]",
+                        choices=["y", "n"], default="y")
+    if answer == "y":
+        name = current_session_name or new_session_name(user_messages[0]["content"])
         save_session(name, messages, project_root)
-        console.print(f"[green]✓ Saved: {name}[/green]")
-
+        console.print(f"[green]Saved: {name}[/green]")
 
 
 @dataclass
@@ -164,7 +159,7 @@ def handle_project_command(state, argument):
 
 
 def handle_reload_command(state, argument):
-    conversation_messages = [m for m in state.history if m["role"] != "system"]
+    conversation_messages = [message for message in state.history if message["role"] != "system"]
     state.history = build_system_messages(state.project_root) + conversation_messages
     console.print("[yellow]Project context reloaded.[/yellow]")
 
@@ -196,12 +191,12 @@ def handle_save_command(state, requested_name):
     elif state.current_session_name:
         name = state.current_session_name
     else:
-        user_msgs = [m for m in state.history if m["role"] == "user"]
-        topic = user_msgs[0]["content"] if user_msgs else ""
+        user_messages = [message for message in state.history if message["role"] == "user"]
+        topic = user_messages[0]["content"] if user_messages else ""
         name = new_session_name(topic)
     save_session(name, state.history, state.project_root)
     state.current_session_name = name
-    console.print(f"[green]✓ Saved: {name}[/green]")
+    console.print(f"[green]Saved: {name}[/green]")
 
 
 def handle_load_command(state, requested_name):
@@ -210,7 +205,7 @@ def handle_load_command(state, requested_name):
     prompt_save(state.current_session_name, state.history, state.project_root)
     state.history = loaded_history
     state.current_session_name = name
-    console.print(f"[green]✓ Loaded: {name}[/green]")
+    console.print(f"[green]Loaded: {name}[/green]")
     console.print(f"[dim]{len(loaded_history)} messages restored[/dim]")
 
 
@@ -219,15 +214,15 @@ def handle_new_command(state, topic):
     state.history = build_system_messages(state.project_root)
     state.current_session_name = None
     if topic:
-        console.print(f"[green]✓ New session on: {safe_for_rich_markup(topic)}[/green]")
+        console.print(f"[green]New session on: {safe_for_rich_markup(topic)}[/green]")
     else:
-        console.print("[green]✓ New session started[/green]")
+        console.print("[green]New session started[/green]")
 
 
 def handle_delete_command(state, requested_name):
     name = session_filename(requested_name)
     delete_session(name, state.project_root)
-    console.print(f"[green]✓ Deleted {name}[/green]")
+    console.print(f"[green]Deleted {name}[/green]")
     if name == state.current_session_name:
         state.current_session_name = None
 
@@ -239,7 +234,7 @@ def handle_rename_command(state, requested_name):
     if previous_session_was_saved and state.current_session_name != new_name:
         delete_session(state.current_session_name, state.project_root)
     state.current_session_name = new_name
-    console.print(f"[green]✓ Renamed to {new_name}[/green]")
+    console.print(f"[green]Renamed to {new_name}[/green]")
 
 
 # Maps command -> (handler, argument usage or None when the command takes no required argument).
@@ -299,7 +294,7 @@ def main():
 
     console.print(f"[bold green]Coder Helper[/bold green] — {safe_for_rich_markup(project_root)}")
     file_count = len(list_files(project_root))
-    project_md_note = "PROJECT.md ✓" if read_project_md(project_root) else "no PROJECT.md"
+    project_md_note = "PROJECT.md found" if read_project_md(project_root) else "no PROJECT.md"
     session_count = len(list_sessions(project_root))
     console.print(f"[dim]{file_count} files · {project_md_note} · {session_count} saved sessions[/dim]")
     console.print("Type /help for commands, /new to start fresh.\n")

@@ -1,21 +1,19 @@
 import os
 
-IGNORED_DIRS = {".git", "__pycache__", "node_modules", "venv", ".venv", "dist", "build"}
-ALLOWED_EXT = {".py", ".js", ".ts", ".html", ".css", ".md",
-               ".json", ".txt", ".yml", ".yaml", ".toml", ".sh"}
+IGNORED_DIRECTORY_NAMES = {".git", "__pycache__", "node_modules", "venv", ".venv", "dist", "build"}
+ALLOWED_FILE_EXTENSIONS = {".py", ".js", ".ts", ".html", ".css", ".md",
+                           ".json", ".txt", ".yml", ".yaml", ".toml", ".sh"}
 
 
 def list_files(root="."):
-    """List all relevant files in the project."""
-    found = []
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
-        for f in files:
-            ext = os.path.splitext(f)[1]
-            if ext in ALLOWED_EXT:
-                path = os.path.relpath(os.path.join(dirpath, f), root)
-                found.append(path)
-    return found
+    """Relative paths of project files with an allowed extension, skipping ignored directories."""
+    found_paths = []
+    for directory_path, directory_names, file_names in os.walk(root):
+        directory_names[:] = [name for name in directory_names if name not in IGNORED_DIRECTORY_NAMES]
+        for file_name in file_names:
+            if os.path.splitext(file_name)[1] in ALLOWED_FILE_EXTENSIONS:
+                found_paths.append(os.path.relpath(os.path.join(directory_path, file_name), root))
+    return found_paths
 
 
 def resolve_path_inside_project(project_root, path):
@@ -36,12 +34,12 @@ def read_file(path):
 
 
 def write_file(path, content):
-    """Write content to a file (creates directories if needed)."""
-    dirname = os.path.dirname(path)
-    if dirname:
-        os.makedirs(dirname, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    """Write content to a file, creating parent directories if needed."""
+    directory_name = os.path.dirname(path)
+    if directory_name:
+        os.makedirs(directory_name, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file_handle:
+        file_handle.write(content)
 
 
 def format_project_file_list(root="."):
@@ -54,18 +52,6 @@ def read_project_md(root="."):
     if not os.path.isfile(project_md_path):
         return None
     return read_file(project_md_path)
-
-
-def project_summary(root=".", max_chars_per_file=3000):
-    """Return a summary of the project files with content."""
-    files = list_files(root)
-    summary = []
-    for f in files:
-        content = read_file(os.path.join(root, f))
-        if len(content) > max_chars_per_file:
-            content = content[:max_chars_per_file] + "\n...[truncated]"
-        summary.append(f"### File: {f}\n```\n{content}\n```")
-    return "\n\n".join(summary)
 
 
 def search(query, root="."):
