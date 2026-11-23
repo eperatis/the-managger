@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+from dataclasses import dataclass
 from rich.console import Console
 from rich.prompt import Prompt
 
@@ -134,179 +135,188 @@ def prompt_save(current_name, messages, project_root):
         console.print(f"[green]✓ Saved: {name}[/green]")
 
 
-def start_fresh(project_root, topic=""):
-    """Return (system_msgs list, new session name or None)."""
-    return build_system_messages(project_root), None
+
+@dataclass
+class ChatState:
+    project_root: str
+    history: list
+    current_session_name: str | None = None
+
+
+def handle_help_command(state, argument):
+    print_help()
+
+
+def handle_files_command(state, argument):
+    for relative_path in list_files(state.project_root):
+        console.print(f" - {relative_path}")
+
+
+def handle_project_command(state, argument):
+    project_md_content = read_project_md(state.project_root)
+    console.print(project_md_content if project_md_content else "[dim]No PROJECT.md found[/dim]")
+
+
+def handle_reload_command(state, argument):
+    conversation_messages = [m for m in state.history if m["role"] != "system"]
+    state.history = build_system_messages(state.project_root) + conversation_messages
+    console.print("[yellow]Project context reloaded.[/yellow]")
+
+
+def handle_search_command(state, query):
+    matches = search(query, state.project_root)
+    if not matches:
+        console.print("[dim]No matches.[/dim]")
+    for relative_path, line_number, line_text in matches:
+        console.print(f" {relative_path}:{line_number}: {line_text}")
+
+
+def handle_sessions_command(state, argument):
+    session_names = list_sessions(state.project_root)
+    if not session_names:
+        console.print("[dim]No saved sessions.[/dim]")
+    for session_name in session_names:
+        console.print(f" [cyan]{session_name}[/cyan]")
+        try:
+            console.print(f"   {session_preview(session_name, state.project_root)}")
+        except ValueError as preview_error:
+            console.print(f"   [red]Unreadable session: {preview_error}[/red]")
+
+
+def handle_save_command(state, requested_name):
+    if requested_name:
+        name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    elif state.current_session_name:
+        name = state.current_session_name
+    else:
+        user_msgs = [m for m in state.history if m["role"] == "user"]
+        topic = user_msgs[0]["content"] if user_msgs else ""
+        name = new_session_name(topic)
+    save_session(name, state.history, state.project_root)
+    state.current_session_name = name
+    console.print(f"[green]✓ Saved: {name}[/green]")
+
+
+def handle_load_command(state, requested_name):
+    name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    loaded_history = load_session(name, state.project_root)
+    prompt_save(state.current_session_name, state.history, state.project_root)
+    state.history = loaded_history
+    state.current_session_name = name
+    console.print(f"[green]✓ Loaded: {name}[/green]")
+    console.print(f"[dim]{len(loaded_history)} messages restored[/dim]")
+
+
+def handle_new_command(state, topic):
+    prompt_save(state.current_session_name, state.history, state.project_root)
+    state.history = build_system_messages(state.project_root)
+    state.current_session_name = None
+    if topic:
+        console.print(f"[green]✓ New session on: {topic}[/green]")
+    else:
+        console.print("[green]✓ New session started[/green]")
+
+
+def handle_delete_command(state, requested_name):
+    name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    delete_session(name, state.project_root)
+    console.print(f"[green]✓ Deleted {name}[/green]")
+    if name == state.current_session_name:
+        state.current_session_name = None
+
+
+def handle_rename_command(state, requested_name):
+    new_name = requested_name if requested_name.endswith(".json") else requested_name + ".json"
+    save_session(new_name, state.history, state.project_root)
+    previous_session_was_saved = state.current_session_name in list_sessions(state.project_root)
+    if previous_session_was_saved and state.current_session_name != new_name:
+        delete_session(state.current_session_name, state.project_root)
+    state.current_session_name = new_name
+    console.print(f"[green]✓ Renamed to {new_name}[/green]")
+
+
+# Maps command -> (handler, argument usage or None when the command takes no required argument).
+COMMAND_HANDLERS = {
+    "/help": (handle_help_command, None),
+    "/files": (handle_files_command, None),
+    "/project": (handle_project_command, None),
+    "/reload": (handle_reload_command, None),
+    "/search": (handle_search_command, "<query>"),
+    "/sessions": (handle_sessions_command, None),
+    "/save": (handle_save_command, None),
+    "/load": (handle_load_command, "<name>"),
+    "/new": (handle_new_command, None),
+    "/delete": (handle_delete_command, "<name>"),
+    "/rename": (handle_rename_command, "<name>"),
+}
+
+
+def run_command(state, command_text):
+    command_name, _, argument = command_text.partition(" ")
+    argument = argument.strip()
+    if command_name not in COMMAND_HANDLERS:
+        console.print(f"[red]Unknown command: {command_name}. Type /help for commands.[/red]")
+        return
+    handler, required_argument_usage = COMMAND_HANDLERS[command_name]
+    if required_argument_usage and not argument:
+        console.print(f"[red]Usage: {command_name} {required_argument_usage}[/red]")
+        return
+    try:
+        handler(state, argument)
+    except (OSError, ValueError) as command_error:
+        console.print(f"[red]{command_name} failed: {command_error}[/red]")
+
+
+def run_chat_turn(state, user_input):
+    history_length_before_turn = len(state.history)
+    state.history.append({"role": "user", "content": user_input})
+
+    try:
+        final_reply = agent_loop(state.history, state.project_root)
+    except Exception as turn_error:
+        console.print(f"[red]Error: {type(turn_error).__name__}: {turn_error}[/red]")
+        del state.history[history_length_before_turn:]
+        return
+
+    try:
+        handle_file_changes(final_reply, state.project_root)
+    except (OSError, ValueError) as file_change_error:
+        console.print(f"[red]Changes not applied: {file_change_error}[/red]")
 
 
 def main():
-    project_root = sys.argv[1] if len(sys.argv) > 1 else "."
-    project_root = os.path.abspath(project_root)
-
+    project_root = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
     if not os.path.isdir(project_root):
         console.print(f"[red]Directory not found: {project_root}[/red]")
         sys.exit(1)
 
     console.print(f"[bold green]Coder Helper[/bold green] — {project_root}")
-    n_files = len(list_files(project_root))
-    pmd_note = "PROJECT.md ✓" if read_project_md(project_root) else "no PROJECT.md"
-    n_sessions = len(list_sessions(project_root))
-    console.print(f"[dim]{n_files} files · {pmd_note} · {n_sessions} saved sessions[/dim]")
+    file_count = len(list_files(project_root))
+    project_md_note = "PROJECT.md ✓" if read_project_md(project_root) else "no PROJECT.md"
+    session_count = len(list_sessions(project_root))
+    console.print(f"[dim]{file_count} files · {project_md_note} · {session_count} saved sessions[/dim]")
     console.print("Type /help for commands, /new to start fresh.\n")
 
-    # Fresh session by default
-    history = build_system_messages(project_root)
-    current_session_name = None
+    state = ChatState(project_root=project_root, history=build_system_messages(project_root))
 
     while True:
         try:
             user_input = Prompt.ask("[bold blue]You[/bold blue]")
         except (KeyboardInterrupt, EOFError):
             console.print()
-            prompt_save(current_session_name, history, project_root)
+            prompt_save(state.current_session_name, state.history, project_root)
             break
 
-        if not user_input.strip():
+        stripped_input = user_input.strip()
+        if not stripped_input:
             continue
-
-        # --- Commands ---
-        cmd = user_input.strip()
-
-        if cmd == "/exit":
-            prompt_save(current_session_name, history, project_root)
+        if stripped_input == "/exit":
+            prompt_save(state.current_session_name, state.history, project_root)
             break
-
-        if cmd == "/help":
-            print_help()
-            continue
-
-        if cmd == "/files":
-            for f in list_files(project_root):
-                console.print(f" - {f}")
-            continue
-
-        if cmd == "/project":
-            pmd = read_project_md(project_root)
-            console.print(pmd if pmd else "[dim]No PROJECT.md found[/dim]")
-            continue
-
-        if cmd == "/reload":
-            sys_msgs = build_system_messages(project_root)
-            history = sys_msgs + [h for h in history if h["role"] != "system"]
-            console.print("[yellow]Project context reloaded.[/yellow]")
-            continue
-
-        if cmd.startswith("/search "):
-            q = cmd[len("/search "):]
-            hits = search(q, project_root)
-            if hits:
-                for p, ln, txt in hits:
-                    console.print(f" {p}:{ln}: {txt}")
-            else:
-                console.print("[dim]No matches.[/dim]")
-            continue
-
-        # Session commands
-        if cmd == "/sessions":
-            sessions = list_sessions(project_root)
-            if not sessions:
-                console.print("[dim]No saved sessions.[/dim]")
-            else:
-                for s in sessions:
-                    console.print(f" [cyan]{s}[/cyan]")
-                    try:
-                        console.print(f"   {session_preview(s, project_root)}")
-                    except ValueError as preview_error:
-                        console.print(f"   [red]Unreadable session: {preview_error}[/red]")
-            continue
-
-        if cmd.startswith("/save"):
-            parts = cmd.split(maxsplit=1)
-            if len(parts) == 2:
-                name = parts[1]
-                if not name.endswith(".json"):
-                    name += ".json"
-            elif current_session_name:
-                name = current_session_name
-            else:
-                user_msgs = [m for m in history if m["role"] == "user"]
-                topic = user_msgs[0]["content"] if user_msgs else ""
-                name = new_session_name(topic)
-            save_session(name, history, project_root)
-            current_session_name = name
-            console.print(f"[green]✓ Saved: {current_session_name}[/green]")
-            continue
-
-        if cmd.startswith("/load "):
-            name = cmd[len("/load "):].strip()
-            if not name.endswith(".json"):
-                name += ".json"
-            try:
-                loaded = load_session(name, project_root)
-            except (OSError, ValueError) as load_error:
-                console.print(f"[red]Could not load session: {load_error}[/red]")
-                continue
-            # Offer to save current before switching
-            prompt_save(current_session_name, history, project_root)
-            history = loaded
-            current_session_name = name
-            console.print(f"[green]✓ Loaded: {name}[/green]")
-            console.print(f"[dim]{len(history)} messages restored[/dim]")
-            continue
-
-        if cmd.startswith("/new"):
-            prompt_save(current_session_name, history, project_root)
-            parts = cmd.split(maxsplit=1)
-            topic = parts[1] if len(parts) == 2 else ""
-            history = build_system_messages(project_root)
-            current_session_name = None
-            if topic:
-                console.print(f"[green]✓ New session on: {topic}[/green]")
-            else:
-                console.print("[green]✓ New session started[/green]")
-            continue
-
-        if cmd.startswith("/delete "):
-            name = cmd[len("/delete "):].strip()
-            if not name.endswith(".json"):
-                name += ".json"
-            try:
-                delete_session(name, project_root)
-            except OSError as delete_error:
-                console.print(f"[red]Could not delete session: {delete_error}[/red]")
-                continue
-            console.print(f"[green]✓ Deleted {name}[/green]")
-            if name == current_session_name:
-                current_session_name = None
-            continue
-
-        if cmd.startswith("/rename "):
-            new_name = cmd[len("/rename "):].strip()
-            if not new_name.endswith(".json"):
-                new_name += ".json"
-            save_session(new_name, history, project_root)
-            previous_session_was_saved = current_session_name in list_sessions(project_root)
-            if previous_session_was_saved and current_session_name != new_name:
-                delete_session(current_session_name, project_root)
-            current_session_name = new_name
-            console.print(f"[green]✓ Renamed to {new_name}[/green]")
-            continue
-
-        # --- Normal chat turn ---
-        history_length_before_turn = len(history)
-        history.append({"role": "user", "content": user_input})
-
-        try:
-            final_reply = agent_loop(history, project_root)
-        except Exception as turn_error:
-            console.print(f"[red]Error: {type(turn_error).__name__}: {turn_error}[/red]")
-            del history[history_length_before_turn:]
-            continue
-
-        try:
-            handle_file_changes(final_reply, project_root)
-        except (OSError, ValueError) as file_change_error:
-            console.print(f"[red]Changes not applied: {file_change_error}[/red]")
+        if stripped_input.startswith("/"):
+            run_command(state, stripped_input)
+        else:
+            run_chat_turn(state, user_input)
 
 
 if __name__ == "__main__":
