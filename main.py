@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from project import (list_files, read_file, write_file, resolve_path_inside_project,
-                     project_tree, read_project_md, search)
+                     format_project_file_list, read_project_md, search)
 from diff_tool import show_diff
 from session import (list_sessions, load_session, save_session, session_filename,
                      delete_session, new_session_name, session_preview)
@@ -88,8 +88,8 @@ def build_system_messages(project_root):
     sys_prompt = SYSTEM_PROMPT_TEMPLATE.format(tools=tools_description())
     msgs = [{"role": "system", "content": sys_prompt}]
 
-    tree = project_tree(project_root)
-    overview = f"## Project overview\nRoot: {project_root}\n\nFiles:\n{tree}"
+    file_list = format_project_file_list(project_root)
+    overview = f"## Project overview\nRoot: {project_root}\n\nFiles:\n{file_list}"
     msgs.append({"role": "system", "content": overview})
 
     pmd = read_project_md(project_root)

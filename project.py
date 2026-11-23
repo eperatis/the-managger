@@ -44,6 +44,18 @@ def write_file(path, content):
         f.write(content)
 
 
+def format_project_file_list(root="."):
+    return "\n".join(sorted(list_files(root)))
+
+
+def read_project_md(root="."):
+    """Return PROJECT.md content, or None when the project has no PROJECT.md (it is optional)."""
+    project_md_path = os.path.join(root, "PROJECT.md")
+    if not os.path.isfile(project_md_path):
+        return None
+    return read_file(project_md_path)
+
+
 def project_summary(root=".", max_chars_per_file=3000):
     """Return a summary of the project files with content."""
     files = list_files(root)
